@@ -4,11 +4,17 @@ const Y = require("./y.js");
 const textify = require("./textify.js");
 const match = require("./match.js");
 
-const extractSlot = Y((self, match, tokens) => match.reduce((acc, cur, idx) => {
+const extractSlots = Y((self, match, tokens) => match.reduce((acc, cur, idx) => {
     if(cur.type === "slot") { return { ...acc, [cur.value]: tokens[idx] }; }
     if(Array.isArray(cur.value)) { return { ...acc, ...self(cur.value, tokens[idx].value) }; }
     return acc;
 }, {}));
+
+const expandWithEnv = env => Y((self, cur) => {
+    if(cur.type === "slot") { return env[cur.value]; }
+    if(Array.isArray(cur.value)) { return { ...cur, value: cur.value.map(self) }; }
+    return cur;
+});
 
 const parser = new nearley.Parser(nearley.Grammar.fromCompiled(grammar));
 
@@ -20,38 +26,26 @@ module.exports = stringToParse => {
         tokens.filter(token => Array.isArray(token.value)).map(token => token.value).forEach(self);
         Y((self, macroEls, env) => {
             if(Array.isArray(macroEls) && macroEls.length == 0) { return; }
+            const curEl = macroEls[0].value;
+            const remEls = macroEls.slice(1);
             switch(macroEls[0].type) {
-            case "match": {
-                env.idx = tokens.findIndex((_, idx, src) => match(src.slice(idx), macroEls[0].value));
+            case "match":
+                env.idx = tokens.findIndex((_, idx, src) => match(src.slice(idx), curEl));
                 if(env.idx === -1) { return; }
-                const newEnv = { ...env, ...extractSlot(macroEls[0].value, tokens.slice(env.idx)) };
-                self(macroEls.slice(1), newEnv);
+                self(remEls, { ...env, ...extractSlots(curEl, tokens.slice(env.idx)) });
                 break;
-            }
-            case "eval": {
-                eval(textify(macroEls[0].value));
-                self(macroEls.slice(1), env);
+            case "eval":
+                eval(textify(curEl));
+                self(remEls, env);
                 break;
-            }
             case "template":
-            case "toplevel": {
-                const expand = Y((self, cur) => {
-                    if(cur.type === "slot") { return env[cur.value]; }
-                    if(Array.isArray(cur.value)) { return { ...cur, value: cur.value.map(self) }; }
-                    return cur;
-                });
-
-                const addTokens = macroEls[0].value.map(expand);
-
-                if(macroEls[0].type === "template") {
-                    tokens.splice(env.idx, macroEls[0].value.length, ...addTokens);
-                } else if(macroEls.type === "toplevel") {
-                    topLevel.push(...addTokens);
-                }
-
-                self(macroEls.slice(1), env);
+                tokens.splice(env.idx, curEl.length, ...curEl.map(expandWithEnv(env)));
+                self(remEls, env);
                 break;
-            }
+            case "toplevel":
+                topLevel.push(...curEl.map(expandWithEnv(env)));
+                self(remEls, env);
+                break;
             }
         })(macro.value, {});
     }));
